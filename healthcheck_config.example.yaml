@@ -51,3 +51,24 @@ userLoginReport:
   time: "06:00"
   thresholdDays: 30
   subject: "Genesys Cloud User Login Report"
+
+# Stats Collector export check — runs inside the scheduled health check.
+# For each collector, looks for today's <filePrefix><yyyyMMdd>.csv in
+# <location>, then <location>/<completedFolder> (where the ETL moves
+# processed files). Use forward slashes for UNC paths: //server/share/...
+# The Windows Service account needs read access to these shares.
+statsCollector:
+  enabled: true
+  collectors:
+    - name: "General Stats"
+      location: "//10.100.10.8/IntegrityReports/Adhoc/Callcenter/Cloud/Production"
+      completedFolder: "History"
+      filePrefix: "Audit_"
+    - name: "QA Stats"
+      location: "//10.100.10.8/IntegrityReports/Adhoc/Callcenter/Cloud/Production"
+      completedFolder: "History"
+      filePrefix: "AuditEvaluation_"
+    - name: "WFM Stats"
+      location: "//10.100.10.8/IntegrityReports/Adhoc/Callcenter/Cloud/WFM"
+      completedFolder: "History"
+      filePrefix: "AuditWFM_"

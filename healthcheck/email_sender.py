@@ -74,12 +74,15 @@ def _build_html_body(
     module_results: dict,
     ac_summary: dict | None,
     gc_summary: dict | None,
+    sc_summary: dict | None = None,
 ) -> str:
     """
     Build the full HTML email body.
 
     ac_summary keys: reachable, total, active_alarms, unreachable_devices (list of dicts)
     gc_summary keys: total_edges, connected_edges, trunks_total, trunks_up, trunks_down
+    sc_summary keys: date, total, ok, issues (list of dicts) — only rendered when
+                     "Stats Collectors" is a key in module_results (i.e. enabled)
     """
 
     ac_ok = module_results.get("AudioCodes")   is not None
@@ -228,6 +231,51 @@ def _build_html_body(
     else:
         gc_card_counts = _count_row("Status", "Module failed — check logs", warn=True)
 
+    # ── Stats Collectors card (only when enabled) ──────────
+    sc_section = ""
+    if "Stats Collectors" in module_results:
+        sc_ok = module_results.get("Stats Collectors") is not None
+        if sc_ok and sc_summary:
+            sc = sc_summary
+            sc_rows = _count_row(f"Audit files OK ({sc.get('date', '')})",
+                                 f"{sc['ok']}/{sc['total']}",
+                                 warn=(sc["ok"] < sc["total"]))
+            if sc["issues"]:
+                sev_color = {"warning": "#E67E22", "critical": "#C0392B"}
+                issue_rows = "".join(
+                    f'<tr style="border-top:1px solid #F4F6F8;">' +
+                    f'<td style="padding:4px 8px;font-size:12px;color:#2C3E50;white-space:nowrap;">{_html_escape(i["name"])}</td>' +
+                    f'<td style="padding:4px 8px;font-size:12px;font-weight:600;white-space:nowrap;color:{sev_color.get(i["severity"], "#C0392B")};">{i["status"]}</td>' +
+                    f'<td style="padding:4px 8px;font-size:12px;color:#7F8C8D;">{_html_escape(i["detail"])}</td>' +
+                    f'</tr>'
+                    for i in sc["issues"]
+                )
+                sc_rows += (
+                    f'<tr><td colspan="2" style="padding:6px 8px 2px 0;">' +
+                    f'<div style="font-size:12px;font-weight:600;color:#C0392B;margin-bottom:4px;">' +
+                    f'&#9888; {len(sc["issues"])} Stats Export Issue(s)</div>' +
+                    f'</td></tr>' +
+                    _sub_table(issue_rows, ["Collector", "Status", "Detail"])
+                )
+        else:
+            sc_rows = _count_row("Status", "Module failed — check logs", warn=True)
+
+        sc_section = f"""
+        <!-- Stats Collectors section -->
+        <tr>
+          <td style="padding:16px 24px;border-bottom:1px solid #ECF0F1;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="font-size:13px;font-weight:700;color:#2C3E50;padding-bottom:8px;">
+                  Stats Collectors &nbsp; {_status_badge(sc_ok)}
+                </td>
+              </tr>
+              {sc_rows}
+            </table>
+          </td>
+        </tr>
+"""
+
     html = f"""<!DOCTYPE html>
 <html>
 <body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#F4F6F8;">
@@ -271,7 +319,7 @@ def _build_html_body(
             </table>
           </td>
         </tr>
-
+{sc_section}
         <!-- Footer -->
         <tr>
           <td style="background:#F8F9FA;padding:12px 24px;">
@@ -303,6 +351,7 @@ def send(
     module_results: dict,
     ac_summary:     dict | None = None,
     gc_summary:     dict | None = None,
+    sc_summary:     dict | None = None,
 ) -> bool:
     """
     Send the Health Check email with an HTML body.
@@ -311,9 +360,10 @@ def send(
     ----------
     config         : full application config dict (reads smtp: namespace)
     pdf_path       : path to the merged PDF, or None if generation failed
-    module_results : dict mapping module name → PDF path or None
+    module_results : dict mapping module name → data or None (failed)
     ac_summary     : AudioCodes summary dict for email body (optional)
     gc_summary     : Genesys Cloud summary dict for email body (optional)
+    sc_summary     : Stats Collectors summary dict for email body (optional)
     """
     smtp_cfg  = config.get("smtp", {})
     host      = smtp_cfg.get("host",     "")
@@ -336,7 +386,8 @@ def send(
 
     report_ts    = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
     full_subject = _build_subject(subject, module_results)
-    html_body    = _build_html_body(report_ts, module_results, ac_summary, gc_summary)
+    html_body    = _build_html_body(report_ts, module_results, ac_summary, gc_summary,
+                                    sc_summary)
 
     log.info("[email] Preparing email → %s", ", ".join(to_addrs))
     log.debug("[email] Subject: %s", full_subject)
@@ -351,8 +402,11 @@ def send(
     plain = (
         f"Contact Centre Health Check — {report_ts}\n\n"
         f"AudioCodes : {'OK' if module_results.get('AudioCodes') else 'FAILED'}\n"
-        f"Genesys    : {'OK' if module_results.get('Genesys Cloud') else 'FAILED'}\n\n"
-        "The full report is attached as a PDF.\n\n"
+        f"Genesys    : {'OK' if module_results.get('Genesys Cloud') else 'FAILED'}\n"
+        + (f"Stats      : "
+           f"{(str(sc_summary['ok']) + '/' + str(sc_summary['total']) + ' audit files OK') if sc_summary else 'FAILED'}\n"
+           if "Stats Collectors" in module_results else "")
+        + "\nThe full report is attached as a PDF.\n\n"
         "This message was sent automatically by the Altron Health Check application."
     )
     msg.attach(MIMEText(plain,    "plain"))

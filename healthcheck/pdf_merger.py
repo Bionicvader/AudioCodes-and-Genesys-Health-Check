@@ -17,6 +17,8 @@ Document structure
   ──── Genesys Cloud platform banner ─
   Page N  — GC: Edge Overview
   Page N  — GC: Trunk Health
+  ──── Stats Collectors banner ──────  (only when statsCollector.enabled)
+  Page N  — SC: Stats Collector Exports
 
 Called by main.py:
     from healthcheck import pdf_merger
@@ -66,6 +68,8 @@ C_AC_BANNER   = colors.HexColor("#2C3E50")   # AudioCodes — dark slate
 C_AC_SECTION  = colors.HexColor("#34495E")   # AudioCodes section header
 C_GC_BANNER   = colors.HexColor("#1B2A4A")   # Genesys     — navy
 C_GC_SECTION  = colors.HexColor("#2E4070")   # Genesys section header
+C_SC_BANNER   = colors.HexColor("#1E4D4A")   # Stats Collectors — dark teal
+C_SC_SECTION  = colors.HexColor("#2A6560")   # Stats Collectors section header
 
 PAGE_W, PAGE_H = A4
 MARGIN         = 18 * mm
@@ -218,11 +222,13 @@ def _sev_cell(text: str, color, st) -> Paragraph:
 #  SECTION 1 — COMBINED ISSUES PAGE
 # ─────────────────────────────────────────────
 
-def _build_issues_page(story: list, ac_data: dict, gc_data: dict, st: dict) -> None:
+def _build_issues_page(story: list, ac_data: dict, gc_data: dict, st: dict,
+                       sc_data: dict | None = None, sc_enabled: bool = False) -> None:
     """
-    Page 1: two clearly separated issue blocks.
+    Page 1: clearly separated issue blocks.
     AudioCodes block: alarms of any severity (active only).
     Genesys block:    offline edges + out-of-service trunks.
+    Stats block:      stats collector exports that are not OK (when enabled).
     """
     story.append(Paragraph("Combined Issues Summary", st["title"]))
     story.append(HRFlowable(width="100%", thickness=1.5, color=C_NAVY, spaceAfter=8))
@@ -383,6 +389,29 @@ def _build_issues_page(story: list, ac_data: dict, gc_data: dict, st: dict) -> N
                 tbl_style.add("TEXTCOLOR",  (2, row_i), (2, row_i), C_WHITE)
             cw = [USABLE_W * w for w in (0.48, 0.36, 0.16)]
             story.append(Table(rows, colWidths=cw, style=tbl_style, repeatRows=1))
+
+    # ── Stats Collector Issues ────────────────────────────
+    if sc_enabled:
+        story.append(Spacer(1, 8 * mm))
+        story.append(_platform_banner(
+            "Stats Collectors  —  Export Issues",
+            "Daily audit files for BI stats exports",
+            C_SC_BANNER,
+        ))
+        story.append(Spacer(1, 4 * mm))
+        if sc_data is None:
+            story.append(Paragraph(
+                "<font color='#C0392B'><b>Stats collector check failed — "
+                "see the application log.</b></font>", st["body"]))
+        else:
+            sc_issues = [r for r in sc_data.get("results", []) if r["status"] != "OK"]
+            if not sc_issues:
+                story.append(Paragraph(
+                    f"&#10003;  All {len(sc_data.get('results', []))} stats collector "
+                    f"audit files for {sc_data.get('date', 'today')} are present and populated.",
+                    st["ok"]))
+            else:
+                story.append(_sc_table(sc_issues, st, detail=False))
 
     # ── Unreachable AudioCodes Devices ──────────────────
     active_results = ac_data.get("active_results", [])
@@ -895,6 +924,97 @@ def _build_gc_trunk_health(story: list, gc_data: dict, st: dict) -> None:
 
 
 # ─────────────────────────────────────────────
+#  SECTION 5 — STATS COLLECTORS
+# ─────────────────────────────────────────────
+
+_SC_SEV_COLORS = {"ok": C_OK, "warning": C_MAJOR, "critical": C_CRITICAL}
+
+
+def _esc(text) -> str:
+    """Escape characters ReportLab's Paragraph markup would misinterpret."""
+    return (str(text).replace("&", "&amp;")
+                     .replace("<", "&lt;")
+                     .replace(">", "&gt;"))
+
+
+def _sc_table(results: list[dict], st: dict, detail: bool) -> Table:
+    """
+    Stats collector table.
+      detail=False → issues page: Collector | Status | Problem | Path checked/found
+      detail=True  → detail page: Collector | Status | File / Path | Rows | Size | Modified
+    """
+    hdr_st, cell_st = st["hdr"], st["cell"]
+    path_st = ParagraphStyle("SCPath", parent=cell_st, textColor=C_FOOTER_TEXT, fontSize=6.5)
+
+    if detail:
+        headers = ["Collector", "Status", "File / Location", "Rows", "Size", "Modified"]
+        widths  = (0.15, 0.10, 0.45, 0.08, 0.09, 0.13)
+    else:
+        headers = ["Collector", "Status", "Problem", "Path"]
+        widths  = (0.15, 0.10, 0.30, 0.45)
+
+    rows = [[Paragraph(f"<b>{h}</b>", hdr_st) for h in headers]]
+    tbl_style = _std_table_style(C_SC_SECTION)
+
+    for row_i, r in enumerate(results, 1):
+        if r["found_path"]:
+            path = _esc(r["found_path"])
+        else:
+            path = "<br/>".join(_esc(p) for p in r["checked_paths"]) or "--"
+        if detail:
+            where = f" ({r['found_in']})" if r["found_in"] else ""
+            file_cell = Paragraph(
+                f"<b>{_esc(r['file_name'] or '--')}</b>{_esc(where)}<br/>"
+                f"<font size='6.5' color='#7F8C8D'>{path}</font><br/>"
+                f"<font size='6.5'>{_esc(r['detail'])}</font>", cell_st)
+            rows.append([
+                Paragraph(_esc(r["name"]), cell_st),
+                Paragraph(r["status"], cell_st),
+                file_cell,
+                Paragraph("--" if r["data_rows"] is None else str(r["data_rows"]), cell_st),
+                Paragraph(r["size"] or "--", cell_st),
+                Paragraph(r["modified"] or "--", cell_st),
+            ])
+        else:
+            rows.append([
+                Paragraph(_esc(r["name"]), cell_st),
+                Paragraph(r["status"], cell_st),
+                Paragraph(_esc(r["detail"]), cell_st),
+                Paragraph(path, path_st),
+            ])
+        clr = _SC_SEV_COLORS.get(r["severity"], C_UNKNOWN)
+        tbl_style.add("BACKGROUND", (1, row_i), (1, row_i), clr)
+        tbl_style.add("TEXTCOLOR",  (1, row_i), (1, row_i), C_WHITE)
+
+    cw = [USABLE_W * w for w in widths]
+    return Table(rows, colWidths=cw, style=tbl_style, repeatRows=1)
+
+
+def _build_sc_detail(story: list, sc_data: dict, st: dict) -> None:
+    """Stats Collectors: full status table for every configured collector."""
+    results = sc_data.get("results", [])
+    ok      = sum(1 for r in results if r["status"] == "OK")
+    story.append(Paragraph("Stats Collector Exports", st["h2"]))
+    story.append(Paragraph(
+        f"Audit files for <b>{sc_data.get('date', '')}</b>  |  "
+        f"OK: <b>{ok}</b>  |  Issues: <b>{len(results) - ok}</b>  |  "
+        f"Total: <b>{len(results)}</b>", st["body"]))
+    story.append(Spacer(1, 3 * mm))
+    if not results:
+        story.append(Paragraph("No stats collectors configured.", st["body"]))
+        return
+    story.append(_sc_table(results, st, detail=True))
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(
+        "Each collector is checked for today's <i>&lt;prefix&gt;yyyyMMdd.csv</i> in its "
+        "base folder, then in its completed (post-ETL) folder.  "
+        "OK = data rows present and modified today.  WARNING = header only or "
+        "not modified today.  MISSING / EMPTY / ERROR = export did not complete or the "
+        "location could not be read.", st["footer"]))
+    story.append(Spacer(1, 4 * mm))
+
+
+# ─────────────────────────────────────────────
 #  FOOTER NOTE
 # ─────────────────────────────────────────────
 
@@ -913,10 +1033,12 @@ def _build_footer(story: list, st: dict) -> None:
 # ─────────────────────────────────────────────
 
 def build(
-    config:    dict,
-    ac_data:   dict | None,
-    gc_data:   dict | None,
-    report_ts: datetime,
+    config:     dict,
+    ac_data:    dict | None,
+    gc_data:    dict | None,
+    report_ts:  datetime,
+    sc_data:    dict | None = None,
+    sc_enabled: bool = False,
 ) -> str:
     """
     Build the merged PDF report.
@@ -929,6 +1051,10 @@ def build(
     gc_data    : dict returned by genesys_health_reporter.collect()
                  or None if Genesys polling failed
     report_ts  : datetime of the report run (used in header + filename)
+    sc_data    : dict returned by stats_collector_checker.collect()
+                 or None if the check failed / is disabled
+    sc_enabled : True when statsCollector.enabled — controls whether the
+                 Stats Collectors sections are rendered at all
 
     Returns the output PDF file path.
     """
@@ -961,7 +1087,7 @@ def build(
     story = []
 
     # Page 1: combined issues
-    _build_issues_page(story, _ac, _gc, st)
+    _build_issues_page(story, _ac, _gc, st, sc_data=sc_data, sc_enabled=sc_enabled)
 
     # AudioCodes platform banner + sections
     story.append(_platform_banner(
@@ -1001,6 +1127,24 @@ def build(
     else:
         _build_gc_edge_overview(story, _gc, st)
         _build_gc_trunk_health(story, _gc, st)
+
+    # Stats Collectors platform banner + section
+    if sc_enabled:
+        story.append(PageBreak())
+        story.append(_platform_banner(
+            "Stats Collectors  —  Detailed Report",
+            "BI stats export audit files",
+            C_SC_BANNER,
+        ))
+        story.append(Spacer(1, 4 * mm))
+        if sc_data is None:
+            story.append(Paragraph(
+                "Stats collector data unavailable — the check failed during this run. "
+                "Check the application log for details.",
+                ParagraphStyle("warn_sc", parent=getSampleStyleSheet()["Normal"],
+                               fontSize=9, textColor=C_CRITICAL)))
+        else:
+            _build_sc_detail(story, sc_data, st)
 
     _build_footer(story, st)
 
