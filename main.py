@@ -8,7 +8,8 @@ Reports
   healthcheck  (default) — AudioCodes + Genesys infrastructure health
       1. Load healthcheck_config.yaml
       2. Configure logging
-      3. Run AudioCodes and Genesys collectors concurrently
+      3. Run AudioCodes, Genesys and (if enabled) Stats Collector checks
+         concurrently
       4. Build the merged PDF via pdf_merger.build()
       5. Send the report email via email_sender.send()
 
@@ -118,6 +119,7 @@ def _release_log_handler(handler: logging.Handler | None) -> None:
 from healthcheck import audiocodes_alarm_reporter   as ac_module
 from healthcheck import genesys_health_reporter     as gc_module
 from healthcheck import genesys_user_login_reporter as ul_module
+from healthcheck import stats_collector_checker     as sc_module
 from healthcheck import pdf_merger
 from healthcheck import email_sender
 
@@ -180,6 +182,21 @@ def _run_genesys(config: dict) -> dict | None:
         return None
 
 
+def _run_stats(config: dict) -> dict | None:
+    """
+    Run the Stats Collector export check.
+    Returns the data dict on success, None on any failure.
+    """
+    try:
+        log.info("[Stats] Starting collector ...")
+        data = sc_module.collect(config)
+        log.info("[Stats] Collector complete.")
+        return data
+    except Exception as exc:
+        log.error("[Stats] Collector failed: %s", exc, exc_info=True)
+        return None
+
+
 # ─────────────────────────────────────────────
 #  HEALTH CHECK REPORT
 # ─────────────────────────────────────────────
@@ -233,38 +250,54 @@ def run(config_path: str = DEFAULT_CONFIG) -> None:
 def _run_health_check(config: dict, report_ts: datetime) -> None:
     """Body of the health check run (logging already configured)."""
     # ── 2. Run collectors concurrently ───────────────────
-    log.info("[1/3] Running collectors (AudioCodes + Genesys) in parallel ...")
+    sc_enabled = sc_module.is_enabled(config)
+    log.info("[1/3] Running collectors (AudioCodes + Genesys%s) in parallel ...",
+             " + Stats Collectors" if sc_enabled else "")
     t_start = datetime.now()
 
     ac_data: dict | None = None
     gc_data: dict | None = None
+    sc_data: dict | None = None
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {
             pool.submit(_run_audiocodes, config): "AudioCodes",
             pool.submit(_run_genesys,    config): "Genesys",
         }
+        if sc_enabled:
+            futures[pool.submit(_run_stats, config)] = "Stats"
         for future in as_completed(futures):
             module_name = futures[future]
             result = future.result()          # exceptions already caught inside runners
             if module_name == "AudioCodes":
                 ac_data = result
-            else:
+            elif module_name == "Genesys":
                 gc_data = result
+            else:
+                sc_data = result
 
     elapsed = (datetime.now() - t_start).total_seconds()
     ac_ok   = ac_data is not None
     gc_ok   = gc_data is not None
+    sc_ok   = sc_data is not None
     log.info(
-        "Collectors done in %.1fs — AudioCodes: %s  |  Genesys: %s",
+        "Collectors done in %.1fs — AudioCodes: %s  |  Genesys: %s  |  Stats: %s",
         elapsed,
         "OK" if ac_ok else "FAILED",
         "OK" if gc_ok else "FAILED",
+        ("OK" if sc_ok else "FAILED") if sc_enabled else "DISABLED",
     )
 
-    if not ac_ok and not gc_ok:
-        log.error("Both collectors failed — aborting PDF generation.")
-        module_results = {"AudioCodes": None, "Genesys": None}
+    # module name → data (None = failed). Disabled modules are left out.
+    module_results = {
+        "AudioCodes":    ac_data,
+        "Genesys Cloud": gc_data,
+    }
+    if sc_enabled:
+        module_results["Stats Collectors"] = sc_data
+
+    if all(v is None for v in module_results.values()):
+        log.error("All collectors failed — aborting PDF generation.")
         email_sender.send(config, None, module_results)
         log.info("Failure notification email sent.")
         return
@@ -272,7 +305,8 @@ def _run_health_check(config: dict, report_ts: datetime) -> None:
     # ── 3. Build merged PDF ───────────────────────────────
     log.info("[2/3] Building merged PDF report ...")
     try:
-        pdf_path = pdf_merger.build(config, ac_data, gc_data, report_ts)
+        pdf_path = pdf_merger.build(config, ac_data, gc_data, report_ts,
+                                    sc_data=sc_data, sc_enabled=sc_enabled)
         log.info("PDF report saved: %s", pdf_path)
     except Exception as exc:
         log.error("PDF generation failed: %s", exc, exc_info=True)
@@ -280,10 +314,6 @@ def _run_health_check(config: dict, report_ts: datetime) -> None:
 
     # ── 4. Send email ─────────────────────────────────────
     log.info("[3/3] Sending email ...")
-    module_results = {
-        "AudioCodes":    ac_data,    # None = failed
-        "Genesys Cloud": gc_data,
-    }
 
     # Build summary dicts for the HTML email body
     ac_summary = None
@@ -348,7 +378,10 @@ def _run_health_check(config: dict, report_ts: datetime) -> None:
             "oos_trunks": _build_oos_trunks(trunks),
         }
 
-    email_sender.send(config, pdf_path, module_results, ac_summary, gc_summary)
+    sc_summary = sc_module.summarise(sc_data) if sc_data else None
+
+    email_sender.send(config, pdf_path, module_results, ac_summary, gc_summary,
+                      sc_summary)
 
     # ── Summary ───────────────────────────────────────────
     total_elapsed = (datetime.now() - t_start).total_seconds()
@@ -356,6 +389,9 @@ def _run_health_check(config: dict, report_ts: datetime) -> None:
     log.info("Health Check complete in %.1fs", total_elapsed)
     log.info("  AudioCodes   : %s", "OK"     if ac_ok   else "FAILED")
     log.info("  Genesys      : %s", "OK"     if gc_ok   else "FAILED")
+    if sc_enabled:
+        log.info("  Stats        : %s", (f"{sc_summary['ok']}/{sc_summary['total']} OK"
+                                         if sc_summary else "FAILED"))
     log.info("  PDF report   : %s", pdf_path if pdf_path else "NOT GENERATED")
     log.info("=" * 60)
 
@@ -385,9 +421,9 @@ def run_user_login_report(config_path: str = DEFAULT_CONFIG) -> None:
         # ── 1. Collect ────────────────────────────────────
         try:
             data = ul_module.collect(config)
-        except (Exception, SystemExit) as exc:   # authenticate() calls sys.exit on failure
+        except (Exception, SystemExit) as exc:   # SystemExit: defensive only
             reason = str(exc) if not isinstance(exc, SystemExit) else \
-                     "Genesys Cloud authentication failed — see log"
+                     "Unexpected exit during collection — see log"
             log.error("[UserLogin] Collection failed: %s", reason, exc_info=True)
             email_sender.send_user_login_report(config, None, None, None, error=reason)
             return

@@ -126,7 +126,10 @@ def authenticate(config: dict) -> PureCloudPlatformClientV2.api_client.ApiClient
     OAuth2 Client Credentials Grant.
     Sets eu-west-1 region, obtains token, verifies with a lightweight API call.
     Accepts the full application config dict — reads from the genesys: namespace.
-    Exits on missing credentials or auth failure.
+
+    Raises RuntimeError on missing credentials or auth failure. (Previously
+    called sys.exit(1), which raised SystemExit — not an Exception — so it
+    escaped main.py's per-module handler and stopped the Windows Service.)
     """
     gc_cfg        = config.get("genesys", config)   # fallback to root for compat
     client_id     = gc_cfg.get("clientId",     "")
@@ -134,7 +137,7 @@ def authenticate(config: dict) -> PureCloudPlatformClientV2.api_client.ApiClient
 
     if not client_id or not client_secret:
         log.error("clientId / clientSecret missing from config (genesys: namespace).")
-        sys.exit(1)
+        raise RuntimeError("Genesys clientId / clientSecret missing from config")
 
     region = PureCloudPlatformClientV2.PureCloudRegionHosts.eu_west_1
     PureCloudPlatformClientV2.configuration.host = region.get_api_host()
@@ -150,10 +153,12 @@ def authenticate(config: dict) -> PureCloudPlatformClientV2.api_client.ApiClient
         return api_client
     except ApiException as exc:
         log.error("Authentication failed -- HTTP %s: %s", exc.status, exc.reason)
-        sys.exit(1)
+        raise RuntimeError(
+            f"Genesys Cloud authentication failed -- HTTP {exc.status}: {exc.reason}"
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         log.error("Unexpected authentication error: %s", exc)
-        sys.exit(1)
+        raise RuntimeError(f"Unexpected Genesys Cloud authentication error: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -857,7 +862,11 @@ def main() -> None:
     log.info("=== Genesys Cloud Health Check Reporter — standalone mode ===")
 
     config    = _load_standalone_config()
-    pdf_path  = run(config)
+    try:
+        pdf_path = run(config)
+    except RuntimeError as exc:
+        log.error("%s", exc)
+        sys.exit(1)
     log.info("Report saved to: %s", pdf_path)
 
 

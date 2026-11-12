@@ -1,10 +1,18 @@
-# Altron Contact Centre Health Check — V1.1
+# Altron Contact Centre Health Check — V1.2
 
 Polls AudioCodes and Genesys Cloud infrastructure on a configured schedule,
 generates a unified PDF health check report, and emails it to configured recipients.
-Also sends a daily Genesys Cloud User Login Report. Runs as a native Windows Service.
+Also checks that the BI stats collector exports ran, and sends a daily Genesys Cloud
+User Login Report. Runs as a native Windows Service.
 
 ---
+
+## What's new in V1.2
+
+- **Stats Collector export check** — ported from the C# Cloud Health Check. Runs inside the
+  scheduled health check and confirms each BI stats collector (General, QA, WFM) wrote today's
+  audit file, with basic sanity checks. Results appear on the PDF issues page, in a
+  Stats Collectors detail section, and as a card in the email. See configuration below.
 
 ## What's new in V1.1
 
@@ -35,6 +43,7 @@ C:\Altron CX\Altron Health Checks\
         audiocodes_alarm_reporter.py
         genesys_health_reporter.py
         genesys_user_login_reporter.py
+        stats_collector_checker.py
         pdf_merger.py
         email_sender.py
 ```
@@ -49,6 +58,7 @@ C:\Altron CX\Altron Health Checks\
 - [ ] Fill in `audiocodes.authHeader`, `devices` and `deviceCountry`
 - [ ] Set `reportDir` and `logDir` to your preferred output paths
 - [ ] Add **Directory > User > View** to the Genesys OAuth client's role (user login report)
+- [ ] Check the `statsCollector` locations, and give the service account read access to them (see below)
 - [ ] Test both reports manually (see Quick Reference)
 - [ ] Run `python install_service.py` from an Administrator terminal
 - [ ] Confirm `Scheduled daily user login report at 06:00` in `healthcheck_service.log`
@@ -76,6 +86,40 @@ userLoginReport:
 
 ---
 
+## Stats Collector Check — configuration
+
+```yaml
+statsCollector:
+  enabled: true                    # false = check skipped, section not shown
+  collectors:
+    - name: "General Stats"
+      location: "//10.100.10.8/IntegrityReports/Adhoc/Callcenter/Cloud/Production"
+      completedFolder: "History"   # where the ETL moves processed files
+      filePrefix: "Audit_"         # file = <filePrefix><yyyyMMdd>.csv
+```
+
+For each collector the check looks for **today's** file (server local date) in `location`,
+then in `location/completedFolder`, and reports one of:
+
+| Status | Meaning |
+|---|---|
+| OK | File found, has data rows, modified today |
+| WARNING | File found but header only, or last modified before today |
+| MISSING | File not found in either folder |
+| EMPTY | File is 0 bytes |
+| ERROR | Location unreachable / access denied / file unreadable, or config incomplete |
+
+- Runs in parallel with the AudioCodes and Genesys collectors; if it fails, the rest of the
+  report is still produced and the email marks the Stats Collectors module as FAILED.
+- Because it checks for today's file, a run scheduled before the collectors write their file
+  (e.g. 06:00) will report MISSING. Align `schedule.times` with the collector schedule.
+- **Share access:** the Windows Service runs as LocalSystem by default, which usually cannot
+  read network shares. Run the service as a domain account with read access to the share:
+  `sc config AltronHealthCheck obj= "DOMAIN\svc_account" password= "********"`, then restart
+  the service. Test first with `python main.py` under that account.
+
+---
+
 ## Quick Reference
 
 | Task | Command |
@@ -95,4 +139,5 @@ userLoginReport:
 
 See `Altron_HealthCheck_Support_Guide.pdf` for full installation, configuration,
 troubleshooting, and operations documentation. The guide predates V1.1 and does not
-yet cover the user login report or the SSL retry behaviour described above.
+yet cover the stats collector check, the user login report or the SSL retry behaviour
+described above.
