@@ -421,9 +421,9 @@ def run_user_login_report(config_path: str = DEFAULT_CONFIG) -> None:
         # ── 1. Collect ────────────────────────────────────
         try:
             data = ul_module.collect(config)
-        except (Exception, SystemExit) as exc:   # authenticate() calls sys.exit on failure
+        except (Exception, SystemExit) as exc:   # SystemExit: defensive only
             reason = str(exc) if not isinstance(exc, SystemExit) else \
-                     "Genesys Cloud authentication failed — see log"
+                     "Unexpected exit during collection — see log"
             log.error("[UserLogin] Collection failed: %s", reason, exc_info=True)
             email_sender.send_user_login_report(config, None, None, None, error=reason)
             return

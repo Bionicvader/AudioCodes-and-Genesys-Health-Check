@@ -136,7 +136,9 @@ def _run_health_check() -> None:
                   "and that main.py is in %s: %s", SERVICE_DIR, exc, exc_info=True)
     except RuntimeError as exc:
         log.error("Config error during health check run: %s", exc, exc_info=True)
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
+        # SystemExit: never let a sys.exit() from any module escape into the
+        # service main loop — it would stop the Windows Service.
         log.error("Unexpected error during health check run: %s", exc, exc_info=True)
 
 

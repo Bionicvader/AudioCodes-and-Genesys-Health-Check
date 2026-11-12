@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import smtplib
-from datetime import datetime
+from datetime import datetime, timezone
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -384,7 +384,8 @@ def send(
         log.error("[email] smtp.to has no valid recipients — skipping email.")
         return False
 
-    report_ts    = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+    # Real UTC — previously local server time (SAST) labelled "UTC"
+    report_ts    = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     full_subject = _build_subject(subject, module_results)
     html_body    = _build_html_body(report_ts, module_results, ac_summary, gc_summary,
                                     sc_summary)
@@ -564,7 +565,6 @@ def send_user_login_report(
         log.error("[email] smtp.to has no valid recipients — skipping email.")
         return False
 
-    from datetime import timezone
     ts_subject = datetime.now().strftime("%Y-%m-%d %H:%M")
     ts_body    = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
