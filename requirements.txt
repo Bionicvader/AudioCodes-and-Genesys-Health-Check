@@ -1,0 +1,6 @@
+pywin32
+schedule
+pyyaml
+requests
+reportlab
+PureCloudPlatformClientV2

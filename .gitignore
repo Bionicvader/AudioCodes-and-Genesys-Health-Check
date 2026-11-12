@@ -1,0 +1,14 @@
+# Live config holds credentials — copy healthcheck_config.example.yaml and fill it in
+healthcheck_config.yaml
+
+# Runtime output
+logs/
+reports/
+*.log
+*.pdf
+!Altron_HealthCheck_Support_Guide.pdf
+*.csv
+
+# Python
+__pycache__/
+*.pyc

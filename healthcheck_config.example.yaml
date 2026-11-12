@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────────────────────────
+#  Altron Contact Centre Health Check — configuration
+#
+#  TEMPLATE: replace every placeholder (<...>) before installing,
+#  or copy the values from your existing production config and
+#  keep the userLoginReport: section at the bottom.
+#
+#  YAML rules: spaces only (no tabs); use forward slashes in paths;
+#  quote any value containing # : or @
+# ─────────────────────────────────────────────────────────────
+
+reporting:
+  reportDir: "C:/Altron CX/Altron Health Checks/reports"
+  logDir: "C:/Altron CX/Altron Health Checks/logs"
+  filenamePrefix: "healthcheck_report"
+  logLevel: "INFO"          # DEBUG, INFO, WARNING, ERROR
+
+audiocodes:
+  authHeader: "Basic <base64-user:password>"
+  historyDays: 7
+  maxWorkers: 10
+  devices:
+    - "<10.x.x.x>"
+  deviceCountry:
+    "<10.x.x.x>": "<Country>"
+
+genesys:
+  clientId: "<your-client-id>"
+  clientSecret: "<your-client-secret>"
+
+schedule:
+  times:
+    - "06:00"
+    - "18:00"
+
+smtp:
+  host: "<smtp-relay-host-or-ip>"
+  port: 25                   # 25 = relay, 587 = STARTTLS, 465 = SSL
+  useTls: false
+  username: ""
+  password: ""
+  from: "<sender@company.com>"
+  to: "<ops@company.com>"    # comma-separated for multiple recipients
+  subject: "Contact Centre Health Check"
+
+# Daily Genesys Cloud User Login Report — active users not logged in
+# for thresholdDays, and users who have never logged in.
+# Sent to smtp.to. OAuth client needs Directory > User > View.
+userLoginReport:
+  enabled: true
+  time: "06:00"
+  thresholdDays: 30
+  subject: "Genesys Cloud User Login Report"
